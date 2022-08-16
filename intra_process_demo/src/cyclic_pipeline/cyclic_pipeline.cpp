@@ -30,9 +30,7 @@ public:
   explicit IncrementerPipe(const rclcpp::NodeOptions & options)
   : Node("pipe", options)
   {
-    // Create a publisher on the output topic.
     pub = this->create_publisher<intra_process_demo_msgs::msg::Data>("out", 10);
-    // Create a subscription on the input topic.
     sub = this->create_subscription<intra_process_demo_msgs::msg::Data>(
       "in", 10, std::bind(&IncrementerPipe::topic_callback, this, _1));
   }
@@ -58,17 +56,17 @@ private:
     RCLCPP_INFO(this->get_logger(), "  sleeping for 1 second...");
 
     if (!rclcpp::sleep_for(1s)) {
-      return;        // Return if the sleep failed (e.g. on ctrl-c).
+      return;  // Return if the sleep failed (e.g. on ctrl-c).
     }
 
     RCLCPP_INFO(this->get_logger(), "  done.");
-    msg->value++;        // Increment the message's data.
+    msg->value++;  // Increment the message's data.
     RCLCPP_INFO(
       this->get_logger(),
       "Incrementing and sending with value: %d, and address: 0x%" PRIXPTR,
       msg->value,
       reinterpret_cast<std::uintptr_t>(msg.get()));
-    pub->publish(std::move(msg));        // Send the message along to the output topic.
+    pub->publish(std::move(msg));  // Send the message along to the output topic.
   }
 
   rclcpp::Publisher<intra_process_demo_msgs::msg::Data>::SharedPtr pub;
@@ -81,7 +79,6 @@ int main(int argc, char * argv[])
   rclcpp::executors::SingleThreadedExecutor executor;
 
   // Create a simple loop by connecting the in and out topics of two IncrementerPipe's.
-  // The expectation is that the address of the message being passed between them never changes.
   auto pipe1 = std::make_shared<IncrementerPipe>(
     rclcpp::NodeOptions()
     .arguments({"--ros-args", "-r", "__name:=pipe1", "-r", "in:=topic1", "-r", "out:=topic2"})
@@ -91,12 +88,15 @@ int main(int argc, char * argv[])
     .arguments({"--ros-args", "-r", "__name:=pipe2", "-r", "in:=topic2", "-r", "out:=topic1"})
     .use_intra_process_comms(true));
 
-  rclcpp::sleep_for(1s);  // Wait for subscriptions to be established to avoid race conditions.
+  // Wait for subscriptions to be established to avoid race conditions.
+  rclcpp::sleep_for(1s);
+
   // Publish the first message (kicking off the cycle).
   auto msg = std::make_unique<intra_process_demo_msgs::msg::Data>();
   msg->value = 42;
   pipe1->publish_first_message(std::move(msg));
 
+  // Add the nodes to the executor, and spin them
   executor.add_node(pipe1);
   executor.add_node(pipe2);
   executor.spin();

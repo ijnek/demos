@@ -14,72 +14,88 @@
 
 #include <chrono>
 #include <cinttypes>
-#include <cstdio>
 #include <memory>
-#include <string>
-#include <utility>
 
-#include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/int32.hpp"
+#include "rclcpp/executors.hpp"
+#include "rclcpp/node.hpp"
+#include "rclcpp/node_options.hpp"
+#include "intra_process_demo_msgs/msg/data.hpp"
 
 using namespace std::chrono_literals;
+using namespace std::placeholders;
 
-// This node receives an Int32, waits 1 second, then increments and sends it.
-struct IncrementerPipe : public rclcpp::Node
+class IncrementerPipe : public rclcpp::Node
 {
-  IncrementerPipe(const std::string & name, const std::string & in, const std::string & out)
-  : Node(name, rclcpp::NodeOptions().use_intra_process_comms(true))
+public:
+  explicit IncrementerPipe(const rclcpp::NodeOptions & options)
+  : Node("pipe", options)
   {
     // Create a publisher on the output topic.
-    pub = this->create_publisher<std_msgs::msg::Int32>(out, 10);
-    std::weak_ptr<std::remove_pointer<decltype(pub.get())>::type> captured_pub = pub;
+    pub = this->create_publisher<intra_process_demo_msgs::msg::Data>("out", 10);
     // Create a subscription on the input topic.
-    sub = this->create_subscription<std_msgs::msg::Int32>(
-      in,
-      10,
-      [captured_pub](std_msgs::msg::Int32::UniquePtr msg) {
-        auto pub_ptr = captured_pub.lock();
-        if (!pub_ptr) {
-          return;
-        }
-        printf(
-          "Received message with value:         %d, and address: 0x%" PRIXPTR "\n", msg->data,
-          reinterpret_cast<std::uintptr_t>(msg.get()));
-        printf("  sleeping for 1 second...\n");
-        if (!rclcpp::sleep_for(1s)) {
-          return;    // Return if the sleep failed (e.g. on ctrl-c).
-        }
-        printf("  done.\n");
-        msg->data++;    // Increment the message's data.
-        printf(
-          "Incrementing and sending with value: %d, and address: 0x%" PRIXPTR "\n", msg->data,
-          reinterpret_cast<std::uintptr_t>(msg.get()));
-        pub_ptr->publish(std::move(msg));    // Send the message along to the output topic.
-      });
+    sub = this->create_subscription<intra_process_demo_msgs::msg::Data>(
+      "in", 10, std::bind(&IncrementerPipe::topic_callback, this, _1));
   }
 
-  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub;
-  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr sub;
+  void publish_first_message(intra_process_demo_msgs::msg::Data::UniquePtr msg)
+  {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Published first message with value:  %d, and address: 0x%" PRIXPTR,
+      msg->value,
+      reinterpret_cast<std::uintptr_t>(msg.get()));
+    pub->publish(std::move(msg));
+  }
+
+private:
+  void topic_callback(intra_process_demo_msgs::msg::Data::UniquePtr msg) const
+  {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Received message with value:         %d, and address: 0x%" PRIXPTR,
+      msg->value,
+      reinterpret_cast<std::uintptr_t>(msg.get()));
+    RCLCPP_INFO(this->get_logger(), "  sleeping for 1 second...");
+
+    if (!rclcpp::sleep_for(1s)) {
+      return;        // Return if the sleep failed (e.g. on ctrl-c).
+    }
+
+    RCLCPP_INFO(this->get_logger(), "  done.");
+    msg->value++;        // Increment the message's data.
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Incrementing and sending with value: %d, and address: 0x%" PRIXPTR,
+      msg->value,
+      reinterpret_cast<std::uintptr_t>(msg.get()));
+    pub->publish(std::move(msg));        // Send the message along to the output topic.
+  }
+
+  rclcpp::Publisher<intra_process_demo_msgs::msg::Data>::SharedPtr pub;
+  rclcpp::Subscription<intra_process_demo_msgs::msg::Data>::SharedPtr sub;
 };
 
 int main(int argc, char * argv[])
 {
-  setvbuf(stdout, NULL, _IONBF, BUFSIZ);
   rclcpp::init(argc, argv);
   rclcpp::executors::SingleThreadedExecutor executor;
 
   // Create a simple loop by connecting the in and out topics of two IncrementerPipe's.
   // The expectation is that the address of the message being passed between them never changes.
-  auto pipe1 = std::make_shared<IncrementerPipe>("pipe1", "topic1", "topic2");
-  auto pipe2 = std::make_shared<IncrementerPipe>("pipe2", "topic2", "topic1");
+  auto pipe1 = std::make_shared<IncrementerPipe>(
+    rclcpp::NodeOptions()
+    .arguments({"--ros-args", "-r", "__name:=pipe1", "-r", "in:=topic1", "-r", "out:=topic2"})
+    .use_intra_process_comms(true));
+  auto pipe2 = std::make_shared<IncrementerPipe>(
+    rclcpp::NodeOptions()
+    .arguments({"--ros-args", "-r", "__name:=pipe2", "-r", "in:=topic2", "-r", "out:=topic1"})
+    .use_intra_process_comms(true));
+
   rclcpp::sleep_for(1s);  // Wait for subscriptions to be established to avoid race conditions.
   // Publish the first message (kicking off the cycle).
-  std::unique_ptr<std_msgs::msg::Int32> msg(new std_msgs::msg::Int32());
-  msg->data = 42;
-  printf(
-    "Published first message with value:  %d, and address: 0x%" PRIXPTR "\n", msg->data,
-    reinterpret_cast<std::uintptr_t>(msg.get()));
-  pipe1->pub->publish(std::move(msg));
+  auto msg = std::make_unique<intra_process_demo_msgs::msg::Data>();
+  msg->value = 42;
+  pipe1->publish_first_message(std::move(msg));
 
   executor.add_node(pipe1);
   executor.add_node(pipe2);
